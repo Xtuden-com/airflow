@@ -715,7 +715,7 @@ class SchedulerJob(BaseJob):
                 return next_run
 
     @provide_session
-    def _process_task_instances(self, dag, task_instances_list, dag_runs=None, session=None):
+    def _process_task_instances(self, dag, task_instances_list, dag_runs=None, task_instances=None, session=None):
         """
         This method schedules the tasks for a single DAG by looking at the
         active DAG runs and adding task instances that should run to the
@@ -725,6 +725,7 @@ class SchedulerJob(BaseJob):
         # update the state of the previously active dag runs
         dag_runs = DagRun.find(dag_id=dag.dag_id, state=State.RUNNING, session=session) if dag_runs is None else dag_runs
         active_dag_runs = []
+        task_instances = task_instances or {}
         for run in dag_runs:
             self.log.info("Examining DAG run %s", run)
             # don't consider runs that are executed in the future
@@ -746,18 +747,20 @@ class SchedulerJob(BaseJob):
             # todo: run.dag is transient but needs to be set
             run.dag = dag
             # todo: preferably the integrity check happens at dag collection time
-            run.verify_integrity(session=session)
-            run.update_state(session=session)
+            run.verify_integrity(task_instances=task_instances.get(run.execution_date), session=session)
+            run.update_state(task_instances=task_instances.get(run.execution_date), session=session)
             if run.state == State.RUNNING:
                 make_transient(run)
                 active_dag_runs.append(run)
 
+        SCHEDULABLE_STATES = {State.NONE, State.UP_FOR_RETRY, State.UP_FOR_RESCHEDULE}
         for run in active_dag_runs:
             self.log.debug("Examining active DAG run: %s", run)
-            # this needs a fresh session sometimes tis get detached
-            tis = run.get_task_instances(state=(State.NONE,
-                                                State.UP_FOR_RETRY,
-                                                State.UP_FOR_RESCHEDULE))
+            tis = task_instances.get(run.execution_date)
+            if tis is not None:
+                tis = [i for i in tis if i.state in SCHEDULEABLE_STATES]
+            else:
+                tis = run.get_task_instances(state=SCHEDULEABLE_STATES)
 
             # this loop is quite slow as it uses are_dependencies_met for
             # every task (in ti.is_runnable). This is also called in
@@ -1226,7 +1229,8 @@ class SchedulerJob(BaseJob):
             session.commit()
             self.log.info("Set the following tasks to scheduled state:\n\t%s", task_instance_str)
 
-    def _process_dags(self, dagbag, dags, tis_out, orm_dag_cache=None):
+    @provide_session
+    def _process_dags(self, dagbag, dags, tis_out, orm_dag_cache=None, session=None):
         """
         Iterates over the dags and processes them. Processing includes:
 
@@ -1244,11 +1248,32 @@ class SchedulerJob(BaseJob):
         """
         orm_dag_cache = orm_dag_cache or {}
         running_dagruns = {}
-        for dag_run in DagRun.find(dag_id=list(orm_dag_cache.keys()), state=State.RUNNING):
+        for dag_run in DagRun.find(dag_id=list(orm_dag_cache.keys()), state=State.RUNNING, session=session):
+            dag_run.dag = dagbag.get_dag(dag_run.dag_id, orm_dag=orm_dag_cache.get(dag_run.dag_id))
             try:
                 running_dagruns[dag_run.dag_id].append(dag_run)
             except KeyError:
                 running_dagruns[dag_run.dag_id] = [dag_run]
+
+        dagrun_task_instances = {}
+        qry = session.query(models.TaskInstance)
+        for dag_runs in running_dagruns.values():
+            for dag_run in dag_runs:
+                if dag_run.dag.partial:
+                    qry = qry.filter(models.TaskInstance.task_id.in_(dag_run.dag.task_ids))
+                else:
+                    qry = qry.filter(
+                        models.TaskInstance.dag_id == dag_run.dag_id,
+                        models.TaskInstance.execution_date == dag_run.execution_date,
+                    )
+
+        for task_instance in qry.all():
+            if task_instance.dag_id not in dagrun_task_instances:
+                dagrun_task_instances[task_instance.dag_id] = {}
+            if task_instance.execution_date not in dagrun_task_instances[task_instance.dag_id]:
+                dagrun_task_instances[task_instance.dag_id][task_instance.execution_date] = []
+
+            dagrun_task_instances[task_instance.dag_id][task_instance.execution_date].append(task_instance)
 
         for dag in dags:
             dag = dagbag.get_dag(dag.dag_id, orm_dag=orm_dag_cache.get(dag.dag_id))
@@ -1272,8 +1297,7 @@ class SchedulerJob(BaseJob):
                         'dagrun.schedule_delay.{dag_id}'.format(dag_id=dag.dag_id),
                         schedule_delay)
                 self.log.info("Created %s", dag_run)
-
-            self._process_task_instances(dag, tis_out, dag_runs=running_dagruns.get(dag.dag_id))
+            self._process_task_instances(dag, tis_out, dag_runs=running_dagruns.get(dag.dag_id), task_instances=dagrun_task_instances.get(dag.dag_id))
             self.manage_slas(dag)
 
     @provide_session

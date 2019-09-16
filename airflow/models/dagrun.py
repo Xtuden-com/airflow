@@ -248,7 +248,7 @@ class DagRun(Base, LoggingMixin):
         ).first()
 
     @provide_session
-    def update_state(self, session=None):
+    def update_state(self, task_instances=None, session=None):
         """
         Determines the overall state of the DagRun based on the state
         of its TaskInstances.
@@ -258,7 +258,7 @@ class DagRun(Base, LoggingMixin):
 
         dag = self.get_dag()
 
-        tis = self.get_task_instances(session=session)
+        tis = task_instances if task_instances is not None else self.get_task_instances(session=session)
         self.log.debug("Updating state for %s considering %s task(s)", self, len(tis))
 
         for ti in list(tis):
@@ -271,10 +271,15 @@ class DagRun(Base, LoggingMixin):
         # pre-calculate
         # db is faster
         start_dttm = timezone.utcnow()
-        unfinished_tasks = self.get_task_instances(
-            state=State.unfinished(),
-            session=session
-        )
+        if task_instances is not None:
+            unfinished_states = set(State.unfinished())
+            unfinished_tasks = [i for i in task_instances if i.state not in unfinished_states]
+        else:
+            unfinished_tasks = self.get_task_instances(
+                state=State.unfinished(),
+                session=session
+            )
+
         none_depends_on_past = all(not t.task.depends_on_past for t in unfinished_tasks)
         none_task_concurrency = all(t.task.task_concurrency is None
                                     for t in unfinished_tasks)
@@ -348,7 +353,7 @@ class DagRun(Base, LoggingMixin):
             Stats.timing('dagrun.duration.failed.{}'.format(self.dag_id), duration)
 
     @provide_session
-    def verify_integrity(self, session=None):
+    def verify_integrity(self, task_instances=None, session=None):
         """
         Verifies the DagRun by checking for removed tasks or tasks that are not in the
         database yet. It will set state to removed or add the task if required.
@@ -356,7 +361,7 @@ class DagRun(Base, LoggingMixin):
         from airflow.models.taskinstance import TaskInstance  # Avoid circular import
 
         dag = self.get_dag()
-        tis = self.get_task_instances(session=session)
+        tis = task_instances if task_instances is not None else self.get_task_instances(session=session)
 
         # check for removed or restored tasks
         task_ids = []
