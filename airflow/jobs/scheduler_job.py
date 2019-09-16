@@ -38,7 +38,7 @@ from airflow.configuration import conf
 from airflow import executors, models, settings
 from airflow.exceptions import AirflowException
 from airflow.jobs.base_job import BaseJob
-from airflow.models import DAG, DagRun, SlaMiss, errors
+from airflow.models import DAG, DagModel, DagRun, SlaMiss, errors
 from airflow.stats import Stats
 from airflow.ti_deps.dep_context import DepContext, SCHEDULEABLE_STATES, SCHEDULED_DEPS
 from airflow.ti_deps.deps.pool_slots_available_dep import STATES_TO_COUNT_AS_RUNNING
@@ -678,7 +678,7 @@ class SchedulerJob(BaseJob):
                 return next_run
 
     @provide_session
-    def _process_task_instances(self, dag, task_instances_list, session=None):
+    def _process_task_instances(self, dag, task_instances_list, dag_runs=None, session=None):
         """
         This method schedules the tasks for a single DAG by looking at the
         active DAG runs and adding task instances that should run to the
@@ -686,7 +686,7 @@ class SchedulerJob(BaseJob):
         """
 
         # update the state of the previously active dag runs
-        dag_runs = DagRun.find(dag_id=dag.dag_id, state=State.RUNNING, session=session)
+        dag_runs = DagRun.find(dag_id=dag.dag_id, state=State.RUNNING, session=session) if dag_runs is None else dag_runs
         active_dag_runs = []
         for run in dag_runs:
             self.log.info("Examining DAG run %s", run)
@@ -1185,7 +1185,7 @@ class SchedulerJob(BaseJob):
             session.commit()
             self.log.info("Set the following tasks to scheduled state:\n\t%s", task_instance_str)
 
-    def _process_dags(self, dagbag, dags, tis_out):
+    def _process_dags(self, dagbag, dags, tis_out, orm_dag_cache=None):
         """
         Iterates over the dags and processes them. Processing includes:
 
@@ -1201,8 +1201,17 @@ class SchedulerJob(BaseJob):
         :type tis_out: list[TaskInstance]
         :rtype: None
         """
+        orm_dag_cache = orm_dag_cache or {}
+        running_dagruns = {}
+        for dag_run in DagRun.find(dag_id=list(orm_dag_cache.keys()), state=State.RUNNING):
+            try:
+                running_dagruns[dag_run.dag_id].append(dag_run)
+            except KeyError:
+                running_dagruns[dag_run.dag_id] = [dag_run]
+
         for dag in dags:
-            dag = dagbag.get_dag(dag.dag_id)
+            dag = dagbag.get_dag(dag.dag_id, orm_dag=orm_dag_cache.get(dag.dag_id))
+
             if not dag:
                 self.log.error("DAG ID %s was not found in the DagBag", dag.dag_id)
                 continue
@@ -1216,6 +1225,8 @@ class SchedulerJob(BaseJob):
             # Only creates DagRun for DAGs that are not subdag since
             # DagRun of subdags are created when SubDagOperator executes.
             if not dag.is_subdag:
+                # TODO: This also incurs a query to find the DagRun that can be computed
+                # up front.
                 dag_run = self.create_dag_run(dag)
                 if dag_run:
                     expected_start_date = dag.following_schedule(dag_run.execution_date)
@@ -1225,7 +1236,7 @@ class SchedulerJob(BaseJob):
                             'dagrun.schedule_delay.{dag_id}'.format(dag_id=dag.dag_id),
                             schedule_delay)
                 self.log.info("Created %s", dag_run)
-            self._process_task_instances(dag, tis_out)
+            self._process_task_instances(dag, tis_out, dag_runs=running_dagruns.get(dag.dag_id))
             self.manage_slas(dag)
 
     @provide_session
@@ -1519,14 +1530,19 @@ class SchedulerJob(BaseJob):
         paused_dag_ids = {dag.dag_id for dag in dagbag.dags.values() if dag.is_paused}
 
         # Pickle the DAGs (if necessary) and put them into a SimpleDag
+        dags_to_lookup = []
         for dag_id in dagbag.dags:
             # Only return DAGs that are not paused
             if dag_id not in paused_dag_ids:
-                dag = dagbag.get_dag(dag_id)
-                pickle_id = None
-                if pickle_dags:
-                    pickle_id = dag.pickle(session).id
-                simple_dags.append(SimpleDag(dag, pickle_id=pickle_id))
+                dags_to_lookup.append(dag_id)
+
+        dag_id_to_orm_dag = {i.dag_id: i for i in session.query(DagModel).filter(DagModel.dag_id.in_(dags_to_lookup)).all()}
+        for dag_id in dags_to_lookup:
+            dag = dagbag.get_dag(dag_id, orm_dag=dag_id_to_orm_dag.get(dag_id))
+            pickle_id = None
+            if pickle_dags:
+                pickle_id = dag.pickle(session).id
+            simple_dags.append(SimpleDag(dag, pickle_id=pickle_id))
 
         dags = self._find_dags_to_process(dagbag.dags.values(), paused_dag_ids)
 
@@ -1535,7 +1551,7 @@ class SchedulerJob(BaseJob):
         # returns true as described in https://bugs.python.org/issue23582 )
         ti_keys_to_schedule = []
 
-        self._process_dags(dagbag, dags, ti_keys_to_schedule)
+        self._process_dags(dagbag, dags, ti_keys_to_schedule, orm_dag_cache=dag_id_to_orm_dag)
 
         for ti_key in ti_keys_to_schedule:
             dag = dagbag.dags[ti_key[0]]

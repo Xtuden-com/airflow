@@ -108,7 +108,7 @@ class DagBag(BaseDagBag, LoggingMixin):
     def dag_ids(self):
         return self.dags.keys()
 
-    def get_dag(self, dag_id):
+    def get_dag(self, dag_id, orm_dag=None):
         """
         Gets the DAG out of the dictionary, and refreshes it if expired
         """
@@ -122,7 +122,7 @@ class DagBag(BaseDagBag, LoggingMixin):
                 root_dag_id = dag.parent_dag.dag_id
 
         # If the dag corresponding to root_dag_id is absent or expired
-        orm_dag = DagModel.get_current(root_dag_id)
+        orm_dag = orm_dag or DagModel.get_current(root_dag_id)
         if orm_dag and (
                 root_dag_id not in self.dags or
                 (

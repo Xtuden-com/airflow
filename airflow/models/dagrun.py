@@ -149,7 +149,7 @@ class DagRun(Base, LoggingMixin):
 
         qry = session.query(DR)
         if dag_id:
-            qry = qry.filter(DR.dag_id == dag_id)
+            qry = qry.filter(DR.dag_id.in_(dag_id)) if isinstance(dag_id, (list, tuple)) else qry.filter(DR.dag_id == dag_id)
         if run_id:
             qry = qry.filter(DR.run_id == run_id)
         if execution_date:
