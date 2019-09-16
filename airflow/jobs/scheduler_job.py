@@ -758,9 +758,9 @@ class SchedulerJob(BaseJob):
             self.log.debug("Examining active DAG run: %s", run)
             tis = task_instances.get(run.execution_date)
             if tis is not None:
-                tis = [i for i in tis if i.state in SCHEDULEABLE_STATES]
+                tis = [i for i in tis if i.state in SCHEDULABLE_STATES]
             else:
-                tis = run.get_task_instances(state=SCHEDULEABLE_STATES)
+                tis = run.get_task_instances(state=SCHEDULABLE_STATES)
 
             # this loop is quite slow as it uses are_dependencies_met for
             # every task (in ti.is_runnable). This is also called in
