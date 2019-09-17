@@ -1244,16 +1244,18 @@ class SchedulerJob(BaseJob):
                         models.TaskInstance.dag_id == dag_run.dag_id,
                         models.TaskInstance.execution_date == dag_run.execution_date,)
                     )
-            return result + qry.filter(or_(*query)).all()
 
-        for task_instance in helpers.reduce_in_chunks(query, dagruns, 0, self.max_tis_per_query):
-            if task_instance.dag_id not in dagrun_task_instances:
-                dagrun_task_instances[task_instance.dag_id] = {}
-            if task_instance.execution_date not in dagrun_task_instances[task_instance.dag_id]:
-                dagrun_task_instances[task_instance.dag_id][task_instance.execution_date] = []
+            for task_instance in qry.filter(or_(*query)).all():
+                if task_instance.dag_id not in dagrun_task_instances:
+                    dagrun_task_instances[task_instance.dag_id] = {}
+                if task_instance.execution_date not in dagrun_task_instances[task_instance.dag_id]:
+                    dagrun_task_instances[task_instance.dag_id][task_instance.execution_date] = []
 
-            dagrun_task_instances[task_instance.dag_id][task_instance.execution_date].append(task_instance)
+                dagrun_task_instances[task_instance.dag_id][task_instance.execution_date].append(task_instance)
 
+            return result + len(items)
+
+        helpers.reduce_in_chunks(query, dagruns, 0, self.max_tis_per_query)
         return dagrun_task_instances
 
     @provide_session
