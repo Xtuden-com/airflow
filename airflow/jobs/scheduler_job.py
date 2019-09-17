@@ -1230,6 +1230,33 @@ class SchedulerJob(BaseJob):
             self.log.info("Set the following tasks to scheduled state:\n\t%s", task_instance_str)
 
     @provide_session
+    def get_dagrun_task_instance(self, dagruns, session=None):
+        dagrun_task_instances = {}
+
+        def query(result, items):
+            qry = session.query(models.TaskInstance)
+            query = []
+            for dag_run in items:
+                if dag_run.dag.partial:
+                    query.append(models.TaskInstance.task_id.in_(dag_run.dag.task_ids))
+                else:
+                    query.append(and_(
+                        models.TaskInstance.dag_id == dag_run.dag_id,
+                        models.TaskInstance.execution_date == dag_run.execution_date,)
+                    )
+            return result + qry.filter(or_(*query)).all()
+
+        for task_instance in helpers.reduce_in_chunks(query, dagruns, 0, self.max_tis_per_query):
+            if task_instance.dag_id not in dagrun_task_instances:
+                dagrun_task_instances[task_instance.dag_id] = {}
+            if task_instance.execution_date not in dagrun_task_instances[task_instance.dag_id]:
+                dagrun_task_instances[task_instance.dag_id][task_instance.execution_date] = []
+
+            dagrun_task_instances[task_instance.dag_id][task_instance.execution_date].append(task_instance)
+
+        return dagrun_task_instances
+
+    @provide_session
     def _process_dags(self, dagbag, dags, tis_out, orm_dag_cache=None, session=None):
         """
         Iterates over the dags and processes them. Processing includes:
@@ -1255,25 +1282,7 @@ class SchedulerJob(BaseJob):
             except KeyError:
                 running_dagruns[dag_run.dag_id] = [dag_run]
 
-        dagrun_task_instances = {}
-        qry = session.query(models.TaskInstance)
-        for dag_runs in running_dagruns.values():
-            for dag_run in dag_runs:
-                if dag_run.dag.partial:
-                    qry = qry.filter(models.TaskInstance.task_id.in_(dag_run.dag.task_ids))
-                else:
-                    qry = qry.filter(
-                        models.TaskInstance.dag_id == dag_run.dag_id,
-                        models.TaskInstance.execution_date == dag_run.execution_date,
-                    )
-
-        for task_instance in qry.all():
-            if task_instance.dag_id not in dagrun_task_instances:
-                dagrun_task_instances[task_instance.dag_id] = {}
-            if task_instance.execution_date not in dagrun_task_instances[task_instance.dag_id]:
-                dagrun_task_instances[task_instance.dag_id][task_instance.execution_date] = []
-
-            dagrun_task_instances[task_instance.dag_id][task_instance.execution_date].append(task_instance)
+        dagrun_task_instances = self.get_dagrun_task_instance([run for runs in running_dagruns.values() for run in runs], session=session)
 
         for dag in dags:
             dag = dagbag.get_dag(dag.dag_id, orm_dag=orm_dag_cache.get(dag.dag_id))
