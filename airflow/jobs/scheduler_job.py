@@ -1384,6 +1384,16 @@ class SchedulerJob(BaseJob):
         # Last time that self.heartbeat() was called.
         last_self_heartbeat_time = timezone.utcnow()
 
+        def periodic_execution():
+            import time
+            while True:
+                self.log.info('RUNNING HEARTBEAT')
+                self.executor.heartbeat()
+                time.sleep(5)
+
+        t = threading.Thread(target=periodic_execution)
+        t.start()
+
         # For the execute duration, parse and schedule DAGs
         while (timezone.utcnow() - execute_start_time).total_seconds() < \
                 self.run_duration or self.run_duration < 0:
