@@ -1346,6 +1346,18 @@ class SchedulerJob(BaseJob):
                                                      processor_timeout,
                                                      async_mode)
 
+        self.executor.start()
+
+        def periodic_execution():
+            import time
+            while True:
+                self.log.warning('RUNNING HEARTBEAT')
+                self.executor.heartbeat()
+                time.sleep(5)
+
+        t = multiprocessing.Process(target=periodic_execution)
+        t.start()
+
         try:
             self._execute_helper()
         except Exception:
@@ -1353,6 +1365,10 @@ class SchedulerJob(BaseJob):
         finally:
             self.processor_agent.end()
             self.log.info("Exited execute loop")
+        try:
+            self.executor.end()
+        except Exception:
+            self.log.exception('Exception when ending executor loop.')
 
     def _execute_helper(self):
         """
@@ -1371,8 +1387,6 @@ class SchedulerJob(BaseJob):
 
         :rtype: None
         """
-        self.executor.start()
-
         self.log.info("Resetting orphaned tasks for active dag runs")
         self.reset_state_for_orphaned_tasks()
 
@@ -1383,16 +1397,6 @@ class SchedulerJob(BaseJob):
 
         # Last time that self.heartbeat() was called.
         last_self_heartbeat_time = timezone.utcnow()
-
-        def periodic_execution():
-            import time
-            while True:
-                self.log.info('RUNNING HEARTBEAT')
-                self.executor.heartbeat()
-                time.sleep(5)
-
-        t = threading.Thread(target=periodic_execution)
-        t.start()
 
         # For the execute duration, parse and schedule DAGs
         while (timezone.utcnow() - execute_start_time).total_seconds() < \
@@ -1446,7 +1450,7 @@ class SchedulerJob(BaseJob):
 
             # Call heartbeats
             self.log.debug("Heartbeating the executor")
-            self.executor.heartbeat()
+            # self.executor.heartbeat()
 
             self._change_state_for_tasks_failed_to_execute()
 
@@ -1496,8 +1500,6 @@ class SchedulerJob(BaseJob):
                 execute_start_time.isoformat()
             )
             models.DAG.deactivate_stale_dags(execute_start_time)
-
-        self.executor.end()
 
         settings.Session.remove()
 
