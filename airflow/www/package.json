@@ -59,14 +59,14 @@
     "bootstrap-toggle": "^2.2.2",
     "d3": "^3.4.4",
     "d3-tip": "^0.9.1",
-    "dagre-d3": "^0.4.18",
+    "dagre-d3": "^0.6.0",
     "datatables.net": "^1.10.19",
     "datatables.net-bs": "^1.10.19",
     "jquery": ">=3.4.0",
     "js-yaml": ">=3.13.1",
     "lodash": "^4.17.13",
     "moment-timezone": "^0.5.21",
-    "npm": "^6.4.1",
+    "npm": "^7.21.0",
     "nvd3": "^1.8.6",
     "url-search-params-polyfill": "^6.0.0"
   }
